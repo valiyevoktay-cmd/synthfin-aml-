@@ -1,0 +1,12 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+dist/
+build/
+*.egg-info/
+*.parquet
+
+# Exclude large datasets from git (stored on Hugging Face)
+datasets/*large*
+datasets/*medium*

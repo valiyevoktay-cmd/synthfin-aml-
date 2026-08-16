@@ -1,0 +1,10 @@
+polars
+numpy
+pandas
+scikit-learn
+lightgbm
+numba
+torch
+torch_geometric
+jupyter
+matplotlib
