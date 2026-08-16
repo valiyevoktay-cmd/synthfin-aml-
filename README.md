@@ -17,23 +17,22 @@ In V9.1, we calibrated the base distributions. A naive tabular model can no long
 
 However, we embedded realistic AML typologies: **Structuring**. Fraudulent actors use high-frequency fan-out/fan-in patterns to dynamically split their transfers. To a tabular model evaluating a single transaction, these look identical to normal P2P or escrow economic activity. But topologically, they form distinct sub-graphs.
 
-### Benchmark Results
-Because the signal is now purely structural and temporal, the baseline metrics shift dramatically. We established a strict 3-tier benchmark:
+### Benchmark Results (LLM-Council Verified)
+To ensure maximum rigor and eliminate temporal look-ahead bias, we formulate this as a strict **Transductive Node Classification** task on a static 10-day snapshot. Both baseline and GNN models see the exact same 80/20 node split, ensuring zero leakage advantages.
 
-*   **Level 1: LightGBM (Raw Tabular)**
-    *   PR-AUC: **0.127** 
-*   **Level 2: LightGBM + Explicit Graph Features (in/out degree, entropy)**
-    *   PR-AUC: **0.703** 
-    *   Inference Latency: **~1500 ms / 1k tx** (Severe feature-store lookup latency)
-*   **Level 3: Temporal EdgeSAGE (End-to-End GNN)**
-    *   PR-AUC: **0.865**
-    *   Inference Latency: **1.3 ms / 1k tx**
+We established a strict benchmark evaluated over **5 random seeds**, validated by a paired t-test (p = 0.000046):
 
-**The Takeaway:** By engineering explicit graph features, tabular models can become competitive again (Level 2), but the heavy feature-store lookups cause massive production latency (~1500 ms). Our Temporal EdgeSAGE model not only beats it in accuracy (0.865 PR-AUC) but operates over **1000x faster**.
+*   **LightGBM (Tuned + 11 Features + Weighted PageRank)**
+    *   PR-AUC: **0.8483 ± 0.0169** 
+    *   Precision@100: **0.96 ± 0.01**
+*   **Pure PyTorch GraphSAGE (40-line implementation)**
+    *   PR-AUC: **0.8817 ± 0.0147**
+    *   Precision@100: **0.98 ± 0.01**
+
+**The Takeaway:** Even when providing LightGBM with explicit topological features (like Weighted PageRank and neighbor aggregates) and extensive hyperparameter tuning, the end-to-end GraphSAGE architecture maintains a statistically significant performance advantage in detecting structured AML patterns.
 
 We also evaluate what actually matters in production AML systems:
-*   **Precision@Top-500:** Because human investigation teams have limited daily bandwidth. Temporal EdgeSAGE dominates here.
-*   **Latency (ms / 1000 tx):** Because real-time transaction blocking requires strict inference limits (1.3ms vs 1500ms).
+*   **Precision@Top-100:** Because human investigation teams have limited daily bandwidth. GraphSAGE dominates here.
 
 ## Quickstart
 
@@ -43,6 +42,8 @@ You can reproduce the GNN vs Tabular benchmark locally or on Colab.
 ```bash
 pip install -r requirements.txt
 jupyter notebook examples/benchmark_tutorial.ipynb
+# Or run the benchmark script directly
+python examples/reddit_benchmark.py
 ```
 
 > **Note on Scale:** 
