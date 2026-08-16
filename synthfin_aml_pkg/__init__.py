@@ -19,5 +19,6 @@ Usage:
 __version__ = "0.1.0"
 
 from .generator import FraudGraphGenerator
+from .dataset import SynthFinDataset
 
-__all__ = ["FraudGraphGenerator"]
+__all__ = ["FraudGraphGenerator", "SynthFinDataset"]

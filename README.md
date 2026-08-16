@@ -2,7 +2,7 @@
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/valiyevoktay-cmd/synthfin-aml-/blob/main/examples/benchmark_tutorial.ipynb)
 [![PyPI version](https://badge.fury.io/py/synthfin-aml.svg)](https://badge.fury.io/py/synthfin-aml)
-[![Hugging Face Datasets](https://img.shields.io/badge/%F0%9F%A4%97%20Datasets-synthfin--aml-yellow)](https://huggingface.co/datasets/synthfin-aml)
+[![Hugging Face Datasets](https://img.shields.io/badge/%F0%9F%A4%97%20Datasets-synthfin--aml-yellow)](https://huggingface.co/datasets/ovvaliyev/synthfin-aml)
 
 A graph-native Anti-Money Laundering (AML) benchmark dataset.
 
@@ -49,10 +49,16 @@ python examples/reddit_benchmark.py
 > **Note on Scale:** 
 > The Polars feature extractor is currently optimized for graphs up to 50M nodes. For larger datasets, chunking is required to avoid OOM. PyTorch Geometric execution is tested and supported on Linux/WSL.
 
-### 2. Loading the Static Datasets
-Pre-generated temporal splits are available on Hugging Face:
+### 2. PyTorch Geometric Wrapper (New in V9.1)
+You can directly load the pre-generated benchmark dataset (100k nodes) into PyTorch Geometric in a single line. The dataset is hosted on Hugging Face (`ovvaliyev/synthfin-aml`) and automatically downloads and processes the explicit structural features (PageRank, neighbor aggregates).
 
 ```python
-from datasets import load_dataset
-dataset = load_dataset("synthfin-aml", "small")
+# pip install synthfin-aml
+from synthfin_aml_pkg import SynthFinDataset
+
+# Automatically downloads from Hugging Face and builds the PyG graph
+dataset = SynthFinDataset(root='./data')
+data = dataset[0]
+
+print(f"Nodes: {data.num_nodes}, Edges: {data.num_edges}")
 ```
