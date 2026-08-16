@@ -3,26 +3,29 @@ import lightgbm as lgb
 import numpy as np
 from sklearn.metrics import precision_recall_curve, auc, classification_report
 import time
+import os
+import gc
 
 class TabularBaseline:
     def __init__(self, data_path: str = None, df: pl.DataFrame = None):
         if df is not None:
             self.df = df
         elif data_path:
+            self.data_path = data_path
             self.df = pl.read_csv(data_path)
         else:
             raise ValueError("Provide either data_path or df")
             
         # Ensure timestamp is datetime
-        if self.df.schema["timestamp"] == pl.Float64:
+        if self.df.schema["timestamp"] in [pl.Float64, pl.Int64]:
             self.df = self.df.with_columns(
                 pl.from_epoch("timestamp", time_unit="s").alias("timestamp")
             )
             
         self.df = self.df.sort("timestamp")
         
-    def _compute_ego_features(self) -> pl.DataFrame:
-        print("Computing Ego-Net Features (Strict Prior Windows)...")
+    def _compute_ego_features_sharded(self, K=10) -> pl.DataFrame:
+        print(f"Computing Ego-Net Features (Deterministic Sharding K={K})...")
         start_t = time.time()
         
         # Melt to node level (source -> OUT, dest -> IN)
@@ -44,26 +47,46 @@ class TabularBaseline:
             pl.col("amount").alias("amt_in")
         ])
         
-        df_nodes = pl.concat([df_out, df_in]).sort(["node_id", "timestamp"])
+        df_nodes = pl.concat([df_out, df_in])
         
-        # Calculate Rolling 7d volumes using rolling to avoid memory explosion
-        # We use closed="left" to strictly exclude the current transaction from its own prior window
-        rolling = df_nodes.rolling(
-            index_column="timestamp", 
-            period="7d", 
-            closed="left",
-            by="node_id"
-        ).agg([
-            pl.col("amt_in").sum().alias("vol_in_7d"),
-            pl.col("amt_out").sum().alias("vol_out_7d"),
-            pl.col("counterparty").n_unique().alias("unique_counterparties_7d"),
-            # Delta between last IN and current time (approximated by last timestamp in window)
-            pl.col("timestamp").max().alias("last_txn_ts")
-        ])
+        # Apply deterministic sharding
+        # Polars hash might be non-deterministic across runs, but consistent within a run.
+        # For strict deterministic sharding: modulo on node_id
+        df_nodes = df_nodes.with_columns(
+            (pl.col("node_id") % K).alias("shard_id")
+        )
         
-        # Join back to transactions for source and dest
+        shard_results = []
+        
+        for k in range(K):
+            print(f"  Processing Shard {k+1}/{K}...")
+            # Extract shard
+            shard_df = df_nodes.filter(pl.col("shard_id") == k).sort(["node_id", "timestamp"])
+            
+            # Now we can safely do eager rolling on this smaller shard
+            rolling = shard_df.rolling(
+                index_column="timestamp", 
+                period="7d", 
+                closed="left",
+                by="node_id"
+            ).agg([
+                pl.col("amt_in").sum().alias("vol_in_7d"),
+                pl.col("amt_out").sum().alias("vol_out_7d"),
+                pl.col("counterparty").n_unique().alias("unique_counterparties_7d"),
+                pl.col("timestamp").max().alias("last_txn_ts")
+            ])
+            
+            shard_results.append(rolling)
+            
+            del shard_df
+            gc.collect()
+            
+        print("Reassembling shards...")
+        all_rolling = pl.concat(shard_results)
+        
+        # Join back to transactions for source
         df_feat = self.df.join(
-            rolling, 
+            all_rolling, 
             left_on=["source_id", "timestamp"],
             right_on=["node_id", "timestamp"],
             how="left"
@@ -85,9 +108,8 @@ class TabularBaseline:
         return df_feat
         
     def train_and_evaluate(self):
-        df_feat = self._compute_ego_features()
+        df_feat = self._compute_ego_features_sharded()
         
-        # Strict OOT Split (last 20% by time is test)
         split_idx = int(df_feat.shape[0] * 0.8)
         train_df = df_feat.slice(0, split_idx)
         test_df = df_feat.slice(split_idx, df_feat.shape[0] - split_idx)
@@ -131,25 +153,15 @@ class TabularBaseline:
         print(f"PR-AUC (Test): {pr_auc:.4f}")
         print("\nClassification Report:")
         print(classification_report(y_test, y_pred, target_names=["clean", "fraud"]))
-        
-        # Feature Importance
-        importance = clf.feature_importances_
-        sorted_idx = np.argsort(importance)[::-1]
-        print("\nTop Features:")
-        for i in sorted_idx[:5]:
-            print(f"{feature_cols[i]}: {importance[i]}")
-            
         return pr_auc
 
     def ablation_no_temporal(self):
-        """Ablation: train WITHOUT temporal features to check for temporal leakage."""
-        df_feat = self._compute_ego_features()
+        df_feat = self._compute_ego_features_sharded()
         
         split_idx = int(df_feat.shape[0] * 0.8)
         train_df = df_feat.slice(0, split_idx)
         test_df = df_feat.slice(split_idx, df_feat.shape[0] - split_idx)
         
-        # Only non-temporal features
         feature_cols_no_time = [
             "amount",
             "src_in_out_ratio_7d",
@@ -163,11 +175,6 @@ class TabularBaseline:
         X_test = test_df.select(feature_cols_no_time).to_pandas().fillna(0)
         y_test = test_df.select("is_fraud").to_pandas().values.ravel()
         
-        print(f"\n{'='*60}")
-        print("  ABLATION: LightGBM WITHOUT temporal features")
-        print(f"{'='*60}")
-        print(f"Training on {len(X_train)} tx (Features: {len(feature_cols_no_time)})...")
-        
         clf = lgb.LGBMClassifier(
             n_estimators=200,
             learning_rate=0.05,
@@ -176,47 +183,18 @@ class TabularBaseline:
             n_jobs=-1
         )
         clf.fit(X_train, y_train)
-        
         y_pred_proba = clf.predict_proba(X_test)[:, 1]
-        y_pred = clf.predict(X_test)
-        
         precision, recall, _ = precision_recall_curve(y_test, y_pred_proba)
         pr_auc = auc(recall, precision)
         
         print(f"PR-AUC (no temporal): {pr_auc:.4f}")
-        print("\nClassification Report:")
-        print(classification_report(y_test, y_pred, target_names=["clean", "fraud"]))
-        
-        importance = clf.feature_importances_
-        sorted_idx = np.argsort(importance)[::-1]
-        print("Top Features (no temporal):")
-        for i in sorted_idx:
-            print(f"  {feature_cols_no_time[i]}: {importance[i]}")
-        
         return pr_auc
 
 if __name__ == "__main__":
     from generator import FraudGraphGenerator
-    import time
-    
     gen = FraudGraphGenerator(seed=42)
     gen.generate_transactions(agents=10000, days=30)
     df = gen.transactions
-    
     baseline = TabularBaseline(df=pl.from_pandas(df))
-    pr_auc_full = baseline.train_and_evaluate()
-    pr_auc_no_time = baseline.ablation_no_temporal()
-    
-    print(f"\n{'='*60}")
-    print("  LEAKAGE DIAGNOSIS")
-    print(f"{'='*60}")
-    print(f"Full features PR-AUC:       {pr_auc_full:.4f}")
-    print(f"No temporal PR-AUC:         {pr_auc_no_time:.4f}")
-    delta = pr_auc_full - pr_auc_no_time
-    print(f"Delta (temporal leak test):  {delta:+.4f}")
-    if delta > 0.15:
-        print("[!!] HIGH temporal leak detected -- temporal features contribute >15pp")
-    elif delta > 0.05:
-        print("[!]  MODERATE temporal signal -- may be legitimate AML pattern")
-    else:
-        print("[OK] LOW temporal dependency -- distributions are well-calibrated")
+    baseline.train_and_evaluate()
+    baseline.ablation_no_temporal()

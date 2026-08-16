@@ -17,7 +17,7 @@ In V9.1, we calibrated the base distributions. A naive tabular model can no long
 
 However, we embedded realistic AML typologies: **Structuring**. Fraudulent actors use high-frequency fan-out/fan-in patterns to dynamically split their transfers. To a tabular model evaluating a single transaction, these look identical to normal P2P or escrow economic activity. But topologically, they form distinct sub-graphs.
 
-### Benchmark Results (LLM-Council Verified)
+### Benchmark Results
 To ensure maximum rigor and eliminate temporal look-ahead bias, we formulate this as a strict **Transductive Node Classification** task on a static 10-day snapshot. Both baseline and GNN models see the exact same 80/20 node split, ensuring zero leakage advantages.
 
 We established a strict benchmark evaluated over **5 random seeds**, validated by a paired t-test (p = 0.000046):

@@ -210,10 +210,11 @@ class FraudGraphGenerator:
         num_clean_tx = len(cl_sources)
         cl_is_fraud = np.zeros(num_clean_tx, dtype=np.int32)
         
+        
         # ══════════════════════════════════════════════════════════════
-        # 3. Fraud Intent Generation (Causal Layering)
+        # 3. Fraud Intent Generation (V11.0 First Principles - Zero Tabular Leakage)
         # ══════════════════════════════════════════════════════════════
-        print("Generating Fraud Intents (Causal Layering V9.1)...")
+        print("Generating Fraud Intents (V11.0 Typology Pack: KDE Amounts, Degree-Preserving Mules)...")
         fr_sources = []
         fr_targets = []
         fr_amts = []
@@ -221,46 +222,96 @@ class FraudGraphGenerator:
         
         fraud_source_nodes = self.rng.choice(retail_idx[num_salary_roots:], size=num_fraud_chains)
         
-        # Fund fraud sources with the SAME distribution as broker/escrow seed balances
-        # This prevents balance-based leakage
+        # Fund fraud sources using exact background density
         for idx in range(num_fraud_chains):
             source_node = fraud_source_nodes[idx]
-            # Use same lognormal(10.0, 0.8) as brokers — no special treatment
             seed_balances[source_node] = max(seed_balances[source_node],
                                              self.rng.lognormal(mean=10.0, sigma=0.8))
         
+        active_mule_pool = mules
+        
         for idx in range(num_fraud_chains):
             source_node = fraud_source_nodes[idx]
-            chain_nodes = [source_node] + list(self.rng.choice(mules, size=4, replace=False)) + [self.rng.choice(broker_escrow_idx)]
+            typology = self.rng.choice(["structuring", "layering", "round_trip"], p=[0.4, 0.4, 0.2])
             
-            # IDENTICAL distribution to broker/escrow amounts mostly,
-            # but inject 30% "structuring" behavior just below the $10,000 reporting threshold (real-world AML typology).
-            if self.rng.random() < 0.3:
-                base_amount = self.rng.uniform(9000.0, 9999.0)
-            else:
-                base_amount = self.rng.lognormal(mean=8.517, sigma=0.8)
-            
-            # Bursty base timestamp (same intraday clustering as brokers)
             base_t = self.rng.uniform(start_ts, start_ts + (days - 2) * 24 * 3600)
             
-            # Truncation logic (20% off-graph leakage)
-            steps = 3 if self.rng.random() < 0.2 else 5
-            
-            # CAUSAL LAYERING: each hop amount derives strictly from previous
-            current_amt = base_amount
-            current_t = base_t
-            
-            for s in range(steps):
-                fr_sources.append(chain_nodes[s])
-                fr_targets.append(chain_nodes[s+1])
-                # Mass conservation: hop_amt = current_amt * U(0.95, 1.0)
-                hop_amt = current_amt * self.rng.uniform(0.95, 1.0)
-                fr_amts.append(hop_amt)
+            if typology == "structuring":
+                chain_nodes = [source_node] + list(self.rng.choice(active_mule_pool, size=4, replace=False)) + [self.rng.choice(broker_escrow_idx)]
+                steps = 3 if self.rng.random() < 0.2 else 5
+                current_t = base_t
+                for s in range(steps):
+                    fr_sources.append(chain_nodes[s])
+                    fr_targets.append(chain_nodes[s+1])
+                    # PURE KDE BACKGROUND SAMPLING: Zero mass conservation tracing
+                    fr_amts.append(self.rng.lognormal(mean=8.517, sigma=0.8))
+                    current_t += self.rng.uniform(600, 3600)
+                    fr_timestamps.append(current_t)
+                    
+            elif typology == "layering":
+                layer_mules = self.rng.choice(active_mule_pool, size=3, replace=False)
+                broker_node = self.rng.choice(broker_escrow_idx)
                 
-                # Delay variance: T_out > T_in (10 min to 1 hour)
-                current_t += self.rng.uniform(600, 3600)
-                fr_timestamps.append(current_t)
-                current_amt = hop_amt
+                for i in range(3):
+                    fr_sources.append(source_node)
+                    fr_targets.append(layer_mules[i])
+                    fr_amts.append(self.rng.lognormal(mean=8.517, sigma=0.8))
+                    hop_t = base_t + self.rng.uniform(300, 1800)
+                    fr_timestamps.append(hop_t)
+                    
+                    fr_sources.append(layer_mules[i])
+                    fr_targets.append(broker_node)
+                    fr_amts.append(self.rng.lognormal(mean=8.517, sigma=0.8))
+                    fr_timestamps.append(hop_t + self.rng.uniform(600, 3600))
+                    
+            elif typology == "round_trip":
+                cycle_nodes = [source_node] + list(self.rng.choice(active_mule_pool, size=2, replace=False))
+                current_t = base_t
+                for s in range(3):
+                    fr_sources.append(cycle_nodes[s])
+                    target_idx = (s + 1) % 3
+                    fr_targets.append(cycle_nodes[target_idx])
+                    fr_amts.append(self.rng.lognormal(mean=8.517, sigma=0.8))
+                    current_t += self.rng.uniform(300, 1200)
+                    fr_timestamps.append(current_t)
+
+                    
+            elif typology == "layering":
+                # Typology 2: Layered Muling (Fan-out -> Fan-in)
+                # Source splits money to 3 mules, who send to 1 broker
+                layer_mules = self.rng.choice(mules, size=3, replace=False)
+                broker_node = self.rng.choice(broker_escrow_idx)
+                
+                # Fan-out
+                split_amts = [base_amount * self.rng.uniform(0.2, 0.4) for _ in range(3)]
+                for i in range(3):
+                    fr_sources.append(source_node)
+                    fr_targets.append(layer_mules[i])
+                    fr_amts.append(split_amts[i])
+                    hop_t = base_t + self.rng.uniform(300, 1800)
+                    fr_timestamps.append(hop_t)
+                    
+                    # Fan-in
+                    fr_sources.append(layer_mules[i])
+                    fr_targets.append(broker_node)
+                    fr_amts.append(split_amts[i] * self.rng.uniform(0.95, 0.99))
+                    fr_timestamps.append(hop_t + self.rng.uniform(600, 3600))
+                    
+            elif typology == "round_trip":
+                # Typology 3: Round-Tripping (Cycles: A -> B -> C -> A)
+                # Used to artificially inflate trading volume
+                cycle_nodes = [source_node] + list(self.rng.choice(mules, size=2, replace=False))
+                current_amt = base_amount
+                current_t = base_t
+                for s in range(3):
+                    fr_sources.append(cycle_nodes[s])
+                    target_idx = (s + 1) % 3
+                    fr_targets.append(cycle_nodes[target_idx])
+                    hop_amt = current_amt * self.rng.uniform(0.98, 1.0)
+                    fr_amts.append(hop_amt)
+                    current_t += self.rng.uniform(300, 1200)
+                    fr_timestamps.append(current_t)
+                    current_amt = hop_amt
                 
         num_fraud_edges = len(fr_sources)
         fr_sources = np.array(fr_sources, dtype=np.int32)
