@@ -16,7 +16,7 @@ Usage:
     nodes_df, txn_df = gen.to_dataframes()
 """
 
-__version__ = "0.1.0"
+__version__ = "9.2.0"
 
 from .generator import FraudGraphGenerator
 from .dataset import SynthFinDataset

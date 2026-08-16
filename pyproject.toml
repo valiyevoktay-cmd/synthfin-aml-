@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "synthfin-aml"
-version = "0.1.0"
+version = "9.2.0"
 description = "Generate realistic synthetic transaction graphs with injected AML patterns for training Graph Neural Networks."
 readme = "README.md"
 license = {text = "MIT"}
@@ -30,7 +30,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-pyg = ["torch>=2.0", "torch-geometric>=2.4"]
+gnn = [
+    "torch>=2.0.0",
+    "torch_geometric>=2.3.0",
+    "datasets",
+    "networkx"
+]
+ml = [
+    "polars>=1.0",
+    "lightgbm",
+    "scikit-learn",
+    "pyarrow"
+]
 dev = ["pytest>=7.0", "psutil"]
 
 [project.urls]
