@@ -4,61 +4,80 @@
 [![PyPI version](https://badge.fury.io/py/synthfin-aml.svg)](https://badge.fury.io/py/synthfin-aml)
 [![Hugging Face Datasets](https://img.shields.io/badge/%F0%9F%A4%97%20Datasets-synthfin--aml-yellow)](https://huggingface.co/datasets/ovvaliyev/synthfin-aml)
 
-A graph-native Anti-Money Laundering (AML) benchmark dataset.
+## What is SynthFin-AML?
 
-## The Synthetic Leakage Problem
+SynthFin-AML is a graph-native Anti-Money Laundering (AML) benchmark dataset. It represents a 10-day synthetic snapshot of transactional data between bank accounts. 
 
-If you train a standard Gradient Boosting model (like LightGBM) on existing AML datasets (e.g. Elliptic, IBM), you often see a PR-AUC of 0.99+. 
-This isn't because the model learned complex money laundering typologies. It's because of **synthetic leakage**: the simulated transaction amounts for fraudulent nodes have completely different statistical distributions than legitimate nodes. The model just splits on `amount` and ignores the graph structure entirely.
+**Dataset Statistics:**
+* Nodes: 100,000
+* Edges: 1,273,403
+* Task: Transductive node classification
 
-## What's New in V9.1
+The objective is to classify nodes into clean or fraudulent entities based on the transaction graph.
 
-In V9.1, we calibrated the base distributions. A naive tabular model can no longer cheat by looking at raw transaction volumes. 
+## Data Schema
 
-However, we embedded realistic AML typologies: **Structuring**. Fraudulent actors use high-frequency fan-out/fan-in patterns to dynamically split their transfers. To a tabular model evaluating a single transaction, these look identical to normal P2P or escrow economic activity. But topologically, they form distinct sub-graphs.
+### Nodes
+Nodes represent individual bank accounts. Each node contains 10 features (topological and aggregational), all of which undergo a `log1p` transformation:
+1. `initial_balance`
+2. `out_degree`
+3. `in_degree`
+4. `out_volume`
+5. `in_volume`
+6. `out_max_amt`
+7. `in_max_amt`
+8. `nbr_in_volume`
+9. `nbr_out_volume`
+10. `pagerank`
 
-### Benchmark Results
-To ensure maximum rigor and eliminate temporal look-ahead bias, we formulate this as a strict **Transductive Node Classification** task on a static 10-day snapshot. Both baseline and GNN models see the exact same 80/20 node split, ensuring zero leakage advantages.
+### Edges
+Edges represent directed financial transactions between accounts.
+* Edge Features: `amount`
 
-We established a strict benchmark evaluated over **5 random seeds**, validated by a paired t-test (p = 0.000046):
+### Classes
+* `0`: Clean
+* `1`: Fraud
+*(Note: The fraud ratio exhibits a high class imbalance, reflecting realistic financial crime distributions.)*
 
-*   **LightGBM (Tuned + 11 Features + Weighted PageRank)**
-    *   PR-AUC: **0.8483 ± 0.0169** 
-    *   Precision@100: **0.96 ± 0.01**
-*   **Pure PyTorch GraphSAGE (40-line implementation)**
-    *   PR-AUC: **0.8817 ± 0.0147**
-    *   Precision@100: **0.98 ± 0.01**
+## The Synthetic Leakage Problem & Our Solution
 
-**The Takeaway:** Even when providing LightGBM with explicit topological features (like Weighted PageRank and neighbor aggregates) and extensive hyperparameter tuning, the end-to-end GraphSAGE architecture maintains a statistically significant performance advantage in detecting structured AML patterns.
+Existing synthetic AML datasets often contain distribution leakage. Tabular models frequently exploit this by splitting on basic distributional artifacts (e.g., raw amount variances) rather than identifying underlying financial crime typologies. 
 
-We also evaluate what actually matters in production AML systems:
-*   **Precision@Top-100:** Because human investigation teams have limited daily bandwidth. GraphSAGE dominates here.
+SynthFin-AML corrects this by fixing the base distribution for both normal and illicit activities. We programmatically embed specific topological AML patterns, such as Structuring and Smurfing. Consequently, models must learn the graph structure and transaction sequences to correctly identify fraudulent nodes, preventing tabular baseline exploitation.
 
-## Quickstart
+## Benchmark Results
 
-### 1. Run the Benchmark Tutorial
-You can reproduce the GNN vs Tabular benchmark locally or on Colab.
+Evaluations were conducted across 5 random seeds using a strict 80/20 transductive split. 
 
+| Model | Modality | PR-AUC | P@100 |
+| :--- | :--- | :--- | :--- |
+| LightGBM | Tabular (11 features incl. PageRank) | 0.8483 ± 0.0169 | 0.96 |
+| PyTorch GraphSAGE | Graph | **0.8817 ± 0.0147** | **0.98** |
+
+GraphSAGE demonstrates a statistically significant improvement over the tabular baseline (p=0.000046).
+
+## Quickstart / PyG Wrapper
+
+Install the dataset package via PyPI:
 ```bash
-pip install -r requirements.txt
-jupyter notebook examples/benchmark_tutorial.ipynb
-# Or run the benchmark script directly
-python examples/reddit_benchmark.py
+pip install synthfin-aml
 ```
 
-> **Note on Scale:** 
-> The Polars feature extractor is currently optimized for graphs up to 50M nodes. For larger datasets, chunking is required to avoid OOM. PyTorch Geometric execution is tested and supported on Linux/WSL.
-
-### 2. PyTorch Geometric Wrapper (New in V9.1)
-You can directly load the pre-generated benchmark dataset (100k nodes) into PyTorch Geometric in a single line. The dataset is hosted on Hugging Face (`ovvaliyev/synthfin-aml`) and automatically downloads and processes the explicit structural features (PageRank, neighbor aggregates).
+The package provides a PyTorch Geometric (PyG) dataset wrapper that automatically downloads the graph from Hugging Face:
 
 ```python
-# pip install synthfin-aml
 from synthfin_aml_pkg import SynthFinDataset
 
-# Automatically downloads from Hugging Face and builds the PyG graph
+# Initializes the dataset and downloads from Hugging Face if not cached
 dataset = SynthFinDataset(root='./data')
 data = dataset[0]
 
-print(f"Nodes: {data.num_nodes}, Edges: {data.num_edges}")
+print(f"Number of nodes: {data.num_nodes}")
+print(f"Number of edges: {data.num_edges}")
 ```
+
+To reproduce the benchmark results, refer to the provided script in the repository: `examples/reddit_benchmark.py`.
+
+## License
+
+This dataset and associated code are released under the MIT License. SynthFin-AML is 100% synthetic, contains no Personally Identifiable Information (PII), and is safe for both commercial and academic usage.
